@@ -12,16 +12,23 @@ const voteRoutes = require('./routes/votes');
 
 const app = express();
 const server = http.createServer(app);
+
+// 1. Determine the allowed origin based on environment
+const allowedOrigin = process.env.NODE_ENV === 'production' 
+  ? undefined 
+  : (process.env.CLIENT_URL || "http://localhost:5173");
+
 const io = socketIo(server, {
   cors: {
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
-    methods: ["GET", "POST"]
+    origin: allowedOrigin || "*", 
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
 // Middleware
 app.use(cors({
-  origin: process.env.CLIENT_URL || "http://localhost:5173",
+  origin: allowedOrigin || "*",
   credentials: true
 }));
 app.use(express.json());
@@ -31,23 +38,25 @@ app.use(cookieParser());
 const mongoURI = process.env.MONGODB_URI || 'mongodb://localhost:27017/pollapp';
 mongoose.connect(mongoURI)
 .then(() => console.log('MongoDB connected successfully'))
-.catch(err => {
-  console.error('MongoDB connection error:', err.message);
-  console.log('\n⚠️  MongoDB Connection Troubleshooting:');
-  console.log('1. If using local MongoDB: Make sure MongoDB is running');
-  console.log('   - Windows: Check MongoDB service is running');
-  console.log('   - Or start with: mongod');
-  console.log('2. If using MongoDB Atlas: Check your connection string in .env file');
-  console.log('3. Current connection string:', mongoURI.replace(/\/\/.*@/, '//***:***@'));
-});
+.catch(err => console.error('MongoDB connection error:', err.message));
 
-// Routes
+// API Routes
 app.use('/api/polls', pollRoutes);
 app.use('/api/votes', voteRoutes);
 
-// Socket.io for real-time updates
-const pollViewers = new Map(); // Track viewers per poll
-const socketPolls = new Map(); // Track which polls each socket is in
+// 2. Serve Frontend Static Files (Production Mode)
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Handle React routing, return index.html for all non-API requests
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+// -------------------------------------------------------------------------
+
+// Socket.io Logic
+const pollViewers = new Map();
+const socketPolls = new Map();
 
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
@@ -55,81 +64,45 @@ io.on('connection', (socket) => {
 
   socket.on('join-poll', (pollId) => {
     const polls = socketPolls.get(socket.id);
-    
-    // Prevent duplicate joins
-    if (polls && polls.has(pollId)) {
-      return;
-    }
+    if (polls && polls.has(pollId)) return;
     
     socket.join(`poll-${pollId}`);
+    if (polls) polls.add(pollId);
     
-    // Track this socket in this poll
-    if (polls) {
-      polls.add(pollId);
-    }
-    
-    // Count unique sockets in the poll room
     const room = io.sockets.adapter.rooms.get(`poll-${pollId}`);
     const viewerCount = room ? room.size : 0;
     pollViewers.set(pollId, viewerCount);
     
-    // Notify all clients in the poll room about viewer count
-    io.to(`poll-${pollId}`).emit('viewer-count', {
-      pollId,
-      count: viewerCount
-    });
-    
-    console.log(`User ${socket.id} joined poll ${pollId} (${viewerCount} viewers)`);
+    io.to(`poll-${pollId}`).emit('viewer-count', { pollId, count: viewerCount });
   });
 
   socket.on('leave-poll', (pollId) => {
     const polls = socketPolls.get(socket.id);
-    if (polls) {
-      polls.delete(pollId);
-    }
+    if (polls) polls.delete(pollId);
     
     socket.leave(`poll-${pollId}`);
     
-    // Count unique sockets in the poll room
     const room = io.sockets.adapter.rooms.get(`poll-${pollId}`);
     const viewerCount = room ? room.size : 0;
     pollViewers.set(pollId, viewerCount);
     
-    // Notify all clients about updated viewer count
-    io.to(`poll-${pollId}`).emit('viewer-count', {
-      pollId,
-      count: viewerCount
-    });
-    
-    console.log(`User ${socket.id} left poll ${pollId} (${viewerCount} viewers)`);
+    io.to(`poll-${pollId}`).emit('viewer-count', { pollId, count: viewerCount });
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-    
-    // Get all polls this socket was in
     const polls = socketPolls.get(socket.id);
     if (polls) {
-      // Decrement viewer count for each poll
       polls.forEach((pollId) => {
         const room = io.sockets.adapter.rooms.get(`poll-${pollId}`);
         const viewerCount = room ? room.size : 0;
         pollViewers.set(pollId, viewerCount);
-        
-        // Notify remaining clients
-        io.to(`poll-${pollId}`).emit('viewer-count', {
-          pollId,
-          count: viewerCount
-        });
+        io.to(`poll-${pollId}`).emit('viewer-count', { pollId, count: viewerCount });
       });
-      
-      // Clean up
       socketPolls.delete(socket.id);
     }
   });
 });
 
-// Make io available to routes
 app.set('io', io);
 
 const PORT = process.env.PORT || 5000;
