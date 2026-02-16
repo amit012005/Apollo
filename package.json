@@ -8,7 +8,7 @@
     "server": "nodemon server/index.js",
     "client": "cd client && npm run dev",
     "start": "node server/index.js",
-    "build-deploy": "npm install && cd client && npm install && npm run build && cd .. && mkdir -p server/public && cp -r client/dist/* server/public/"
+    "build-deploy": "npm install && cd client && npm install --include=dev && npm run build && cd .. && mkdir -p server/public && cp -r client/dist/* server/public/"
   },
   "keywords": [],
   "author": "",
